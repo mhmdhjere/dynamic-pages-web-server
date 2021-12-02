@@ -15,6 +15,7 @@ TIMEOUT = config.timeout
 POST_REQUEST = 1
 DELETE_REQUEST = 0
 
+
 ############################ ERROR HANDLING ############################
 #   200 (OK) - returned where everything is ok:
 #       GET - requested file is read successfully
@@ -26,7 +27,8 @@ DELETE_REQUEST = 0
 #       DELETE - the path is not of form users/<username>
 #
 #   401 (Unauthorized) - unauthorized access to some resource
-#
+#       POST - the user is not authorized or non-Basic authorization
+#       DELETE - the user is not authorized or non-Basic authorization
 #
 #
 #
@@ -68,9 +70,9 @@ def command_reform(cmd):
     new_cmd = new_cmd.strip()
     ###################
     # handle newlines
-    #new_cmd = new_cmd.replace('\r\n', '\\\r\n')
+    # new_cmd = new_cmd.replace('\r\n', '\\\r\n')
     # ensure that no additional slashes were added
-    #new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
+    # new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
     ###################
     return new_cmd
 
@@ -109,6 +111,11 @@ async def get_handler(request):
             # params is the dictionary needed in the context
             user = {'username': None, 'authenticated': False}
             params = request.query
+            # check if the authorization is Basic
+            if not is_basic_auth(request):
+                content = 'Unauthorized user'
+                return web.Response(body=content.encode('utf-8'), status=401,
+                                    headers={"Content-Type": 'text/plain', "charset": "utf-8"})
             auth_user = decode_auth(request)
             # check if the user exists in the database
             if auth_user:
@@ -145,14 +152,10 @@ async def get_handler(request):
 def decode_auth(request):
     try:
         auth = request.headers['Authorization']
-    except:
+    except KeyError:
         return False
     else:
         cred_encoded_list = auth.split(' ')
-        encoding_type = cred_encoded_list[0]
-        # check if the authorization method is Basic
-        if encoding_type != 'Basic':
-            return False
         cred_encoded = cred_encoded_list[1]
         cred_decoded = base64.b64decode(cred_encoded).decode('utf-8')
         credentials = cred_decoded.split(':')
@@ -223,8 +226,8 @@ async def post_handler(request):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-    # ensure this is the admin -  otherwise return unauthorized
-    if not authenticated(user):
+    # ensure this is the admin and the authorization is Basic -  otherwise return unauthorized
+    if not authenticated(user) or not is_basic_auth(request):
         content = 'Unauthorized user'
         return web.Response(body=content.encode('utf-8'), status=401,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
@@ -242,6 +245,18 @@ async def post_handler(request):
                         headers={"Content-Type": 'text/plain', "charset": "utf-8"})
 
 
+# check if the authorization method is Basic
+def is_basic_auth(request):
+    try:
+        auth = request.headers['Authorization']
+    except KeyError:
+        return False
+    else:
+        cred_encoded_list = auth.split(' ')
+        encoding_type = cred_encoded_list[0]
+        return False if encoding_type != 'Basic' else True
+
+
 async def delete_handler(request):
     print('DELETING...')
     path = Path(request.path)
@@ -252,8 +267,8 @@ async def delete_handler(request):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-    # ensure this is the admin -  otherwise return unauthorized
-    if not authenticated(user):
+    # ensure this is the admin and the authorization is Basic -  otherwise return unauthorized
+    if not authenticated(user) or not is_basic_auth(request):
         content = 'Unauthorized user'
         return web.Response(body=content.encode('utf-8'), status=401,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
