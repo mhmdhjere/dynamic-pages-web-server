@@ -46,9 +46,9 @@ def command_reform(cmd):
     # remove whitespaces from the beginning and the end
     new_cmd = new_cmd.strip()
     # handle newlines
-    new_cmd = new_cmd.replace('\r\n', '\\\r\n')
+    #new_cmd = new_cmd.replace('\r\n', '\\\r\n')
     # ensure that no additional slashes were added
-    new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
+    #new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
     return new_cmd
 
 
@@ -71,15 +71,14 @@ async def get_handler(request):
     print('GETTING...')
     path = Path(request.path[1:])
     extension = path.suffix
+    # path.parts splits the path and return its parts (in this case without the root (aka /))
+    is_root_path = True if not path.parts else False
     # check file existence
-    if not path.is_file():
-        if path.name == 'favicon.ico':
-            pass
-        else:
-            content = '404 Page not found'
-            return web.Response(body=content.encode('utf-8'), status=404,
-                                headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-    else:
+    if is_root_path:
+        content = 'Welcome Bro!'
+        return web.Response(body=content.encode('utf-8'), status=200,
+                            headers={"Content-Type": 'text/html', "charset": "utf-8"})
+    elif path.is_file():
         # ------------- dynamic pages handle -------------
         if extension == '.dp':
             # auth_user is the user requesting to get the .dp file
@@ -105,6 +104,14 @@ async def get_handler(request):
             content = await non_dp_handle(path)
             return web.Response(body=content.encode('utf-8'), status=200,
                                 headers={"Content-Type": 'text/html', "charset": "utf-8"})
+        ###################
+    else:
+        if path.name == 'favicon.ico':
+            pass
+        else:
+            content = '404 Page not found'
+            return web.Response(body=content.encode('utf-8'), status=404,
+                                headers={"Content-Type": 'text/plain', "charset": "utf-8"})
 
 
 def decode_auth(request):
@@ -129,7 +136,9 @@ def authenticated(user):
 async def decode_user(request):
     encoded_body = await request.content.read()
     tmp = urllib.parse.parse_qs(encoded_body.decode('utf-8'))
-    new_user = {'username': tmp['username'][0], 'password': tmp['password'][0]}
+    username = list(tmp.keys())[0]
+    password = tmp[username][0]
+    new_user = {'username': username, 'password': password}
     return new_user
 
 
@@ -175,7 +184,9 @@ async def post_handler(request):
     path = Path(request.path)
     user = decode_auth(request)
     new_user = await decode_user(request)
+    print('Kinder')
     # ensure path is \users - otherwise return error
+
     if not valid_users_path(path, POST_REQUEST):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
@@ -229,7 +240,6 @@ async def handler(request):
     try:
         return await handlers[request.method](request)
     except KeyError:
-
         content = request.method + ' is not implemented.'
         return web.Response(body=content.encode('utf-8'), status=501,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
