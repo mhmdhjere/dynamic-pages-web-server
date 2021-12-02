@@ -15,6 +15,27 @@ TIMEOUT = config.timeout
 POST_REQUEST = 1
 DELETE_REQUEST = 0
 
+############################ ERROR HANDLING ############################
+#   200 (OK) - returned where everything is ok:
+#       GET - requested file is read successfully
+#       POST - the user was added successfully by the admin
+#       DELETE - the user was deleted successfully by the admin
+#
+#   400 (Bad Request) - the request has invalid form, still a legal one:
+#       POST - the path is not /users
+#       DELETE - the path is not of form users/<username>
+#
+#   401 (Unauthorized) - unauthorized access to some resource
+#
+#
+#
+#
+#
+#   404 (Not Found) - returned when the requested file is missing:
+#       GET - the requested file is not found
+#
+#
+########################################################################
 
 async def non_dp_handle(path):
     extension = path.suffix[1:]
@@ -45,10 +66,12 @@ def command_reform(cmd):
     new_cmd = cmd[2:-2]
     # remove whitespaces from the beginning and the end
     new_cmd = new_cmd.strip()
+    ###################
     # handle newlines
     #new_cmd = new_cmd.replace('\r\n', '\\\r\n')
     # ensure that no additional slashes were added
     #new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
+    ###################
     return new_cmd
 
 
@@ -56,7 +79,6 @@ async def dp_handler(path, user, params):
     async with aiofiles.open(path, mode="rb") as i:
         content = await i.read()
     content = content.decode('utf-8')
-    print(user)
     res = ''
     tokens = re.split(r"(?s)({%.*?%})", content)
     for token in tokens:
@@ -73,11 +95,12 @@ async def get_handler(request):
     extension = path.suffix
     # path.parts splits the path and return its parts (in this case without the root (aka /))
     is_root_path = True if not path.parts else False
-    # check file existence
+    # check if the requested path is the root path
     if is_root_path:
         content = 'Welcome Bro!'
         return web.Response(body=content.encode('utf-8'), status=200,
                             headers={"Content-Type": 'text/html', "charset": "utf-8"})
+    # check file existence
     elif path.is_file():
         # ------------- dynamic pages handle -------------
         if extension == '.dp':
@@ -87,14 +110,19 @@ async def get_handler(request):
             user = {'username': None, 'authenticated': False}
             params = request.query
             auth_user = decode_auth(request)
-
             # check if the user exists in the database
             if auth_user:
                 user = auth_user if user_in_db(auth_user) else user
-
-            dp_content = await dp_handler(path, user, params)
-            return web.Response(body=dp_content.encode('utf-8'), status=200,
-                                headers={"Content-Type": 'text/html', "charset": "utf-8"})
+            # some error could occur while parsing the dynamic page -> internal server error
+            try:
+                dp_content = await dp_handler(path, user, params)
+            except:
+                content = f'Some internal server error occurred while trying to read the file {path.name}.'
+                return web.Response(body=content.encode('utf-8'), status=500,
+                                    headers={"Content-Type": 'text/html', "charset": "utf-8"})
+            else:
+                return web.Response(body=dp_content.encode('utf-8'), status=200,
+                                    headers={"Content-Type": 'text/html', "charset": "utf-8"})
         # ------------- non dynamic pages handle -------------
         # three cases:
         # 1. ends with extension which exists in mime.json        ---> mime-type (from the mime.json)
@@ -120,7 +148,12 @@ def decode_auth(request):
     except:
         return False
     else:
-        cred_encoded = auth.split(' ')[1]
+        cred_encoded_list = auth.split(' ')
+        encoding_type = cred_encoded_list[0]
+        # check if the authorization method is Basic
+        if encoding_type != 'Basic':
+            return False
+        cred_encoded = cred_encoded_list[1]
         cred_decoded = base64.b64decode(cred_encoded).decode('utf-8')
         credentials = cred_decoded.split(':')
         credentials = {'username': credentials[0], 'password': credentials[1]}
@@ -184,9 +217,8 @@ async def post_handler(request):
     path = Path(request.path)
     user = decode_auth(request)
     new_user = await decode_user(request)
-    print('Kinder')
-    # ensure path is \users - otherwise return error
 
+    # ensure path is \users - otherwise return error
     if not valid_users_path(path, POST_REQUEST):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
