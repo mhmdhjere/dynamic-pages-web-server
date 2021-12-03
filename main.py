@@ -26,15 +26,21 @@ DELETE_REQUEST = 0
 #       POST - the path is not /users
 #       DELETE - the path is not of form users/<username>
 #
-#   401 (Unauthorized) - unauthorized access to some resource
+#   401 (Unauthorized) - unauthorized access to some resource:
+#       GET - non-Basic authorization
 #       POST - the user is not authorized or non-Basic authorization
 #       DELETE - the user is not authorized or non-Basic authorization
 #
-#
-#
+#   403 (Forbidden) - unauthorized user request:
+#       POST - the user is in the database and not authorized
+#       DELETE - the user is in the database and not authorized
 #
 #   404 (Not Found) - returned when the requested file is missing:
 #       GET - the requested file is not found
+#
+#   409 (Conflict) - a conflict in the existing data with the new one:
+#       POST - the user to be added is already in the database
+#
 #
 #
 ########################################################################
@@ -113,7 +119,7 @@ async def get_handler(request):
             params = request.query
             # check if the authorization is Basic
             if not is_basic_auth(request):
-                content = 'Unauthorized user'
+                content = 'Unauthorized request'
                 return web.Response(body=content.encode('utf-8'), status=401,
                                     headers={"Content-Type": 'text/plain', "charset": "utf-8"})
             auth_user = decode_auth(request)
@@ -221,23 +227,27 @@ async def post_handler(request):
     user = decode_auth(request)
     new_user = await decode_user(request)
 
-    # ensure path is \users - otherwise return error
+    # ensure path is \users - otherwise return 404 (Bad Request)
     if not valid_users_path(path, POST_REQUEST):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-    # ensure this is the admin and the authorization is Basic -  otherwise return unauthorized
-    if not authenticated(user) or not is_basic_auth(request):
-        content = 'Unauthorized user'
+    # ensure the authorization is Basic -  otherwise return unauthorized
+    if not is_basic_auth(request):
+        content = 'Unauthorized request'
         return web.Response(body=content.encode('utf-8'), status=401,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-
-    # ensure user doesn't exist in the database - otherwise return error
-    if user_in_db(new_user):
-        content = 'Error: user already exists'
+    # ensure this is the admin - otherwise return forbidden
+    if not authenticated(user):
+        content = 'Forbidden'
         return web.Response(body=content.encode('utf-8'), status=403,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-
+    # ensure user doesn't exist in the database - otherwise return Conflict
+    if user_in_db(new_user):
+        content = 'Conflict error: user already exists'
+        return web.Response(body=content.encode('utf-8'), status=409,
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+    
     add_user_to_db(new_user)
     name = new_user['username']
     content = f'User {name} was added successfully to the database'
@@ -267,12 +277,16 @@ async def delete_handler(request):
         content = 'Bad request'
         return web.Response(body=content.encode('utf-8'), status=400,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-    # ensure this is the admin and the authorization is Basic -  otherwise return unauthorized
-    if not authenticated(user) or not is_basic_auth(request):
-        content = 'Unauthorized user'
+    # ensure the authorization is Basic -  otherwise return unauthorized
+    if not is_basic_auth(request):
+        content = 'Unauthorized request'
         return web.Response(body=content.encode('utf-8'), status=401,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
-
+    # ensure this is the admin - otherwise return forbidden
+    if not authenticated(user):
+        content = 'Forbidden'
+        return web.Response(body=content.encode('utf-8'), status=403,
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
     # delete user from database - doesn't matter if he already exists
     delete_user_from_db(user_to_delete)
     content = f'User {user_to_delete} was deleted successfully from the database'
