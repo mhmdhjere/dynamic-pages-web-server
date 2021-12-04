@@ -126,16 +126,9 @@ async def get_handler(request):
             # check if the user exists in the database
             if auth_user:
                 user = auth_user if user_in_db(auth_user) else user
-            # some error could occur while parsing the dynamic page -> internal server error
-            try:
-                dp_content = await dp_handler(path, user, params)
-            except:
-                content = f'Some internal server error occurred while trying to read the file {path.name}.'
-                return web.Response(body=content.encode('utf-8'), status=500,
-                                    headers={"Content-Type": 'text/html', "charset": "utf-8"})
-            else:
-                return web.Response(body=dp_content.encode('utf-8'), status=200,
-                                    headers={"Content-Type": 'text/html', "charset": "utf-8"})
+            dp_content = await dp_handler(path, user, params)
+            return web.Response(body=dp_content.encode('utf-8'), status=200,
+                                headers={"Content-Type": 'text/html', "charset": "utf-8"})
         # ------------- non dynamic pages handle -------------
         # three cases:
         # 1. ends with extension which exists in mime.json        ---> mime-type (from the mime.json)
@@ -304,6 +297,10 @@ async def handler(request):
         content = request.method + ' is not implemented.'
         return web.Response(body=content.encode('utf-8'), status=501,
                             headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+    except:
+        content = 'Some internal server error occurred while trying to read the file.'
+        return web.Response(body=content.encode('utf-8'), status=500,
+                            headers={"Content-Type": 'text/html', "charset": "utf-8"})
 
 
 async def main():
