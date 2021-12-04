@@ -9,6 +9,9 @@ import urllib.parse
 from config import admin
 from pathlib import Path
 from aiohttp import web
+from datetime import datetime
+from time import mktime
+from wsgiref.handlers import format_date_time
 
 PORT = config.port
 TIMEOUT = config.timeout
@@ -16,34 +19,47 @@ POST_REQUEST = 1
 DELETE_REQUEST = 0
 
 
-############################ ERROR HANDLING ############################
-#   200 (OK) - returned where everything is ok:
-#       GET - requested file is read successfully
-#       POST - the user was added successfully by the admin
-#       DELETE - the user was deleted successfully by the admin
-#
-#   400 (Bad Request) - the request has invalid form, still a legal one:
-#       POST - the path is not /users
-#       DELETE - the path is not of form users/<username>
-#
-#   401 (Unauthorized) - unauthorized access to some resource:
-#       GET - non-Basic authorization
-#       POST - the user is not authorized or non-Basic authorization
-#       DELETE - the user is not authorized or non-Basic authorization
-#
-#   403 (Forbidden) - unauthorized user request:
-#       POST - the user is in the database and not authorized
-#       DELETE - the user is in the database and not authorized
-#
-#   404 (Not Found) - returned when the requested file is missing:
-#       GET - the requested file is not found
-#
-#   409 (Conflict) - a conflict in the existing data with the new one:
-#       POST - the user to be added is already in the database
-#
-#
-#
-########################################################################
+############################### ERROR HANDLING ###############################
+#                                                                            #
+#   200 (OK) - returned where everything is ok:                              #
+#       GET - requested file is read successfully                            #
+#       POST - the user was added successfully by the admin                  #
+#       DELETE - the user was deleted successfully by the admin              #
+#                                                                            #
+#   400 (Bad Request) - the request has invalid form, still a legal one:     #
+#       POST - the path is not /users                                        #
+#       DELETE - the path is not of form users/<username>                    #
+#                                                                            #
+#   401 (Unauthorized) - unauthorized access to some resource:               #
+#       GET - non-Basic authorization on dynamic page request                #
+#       POST - wrong admin password or non-Basic authorization               #
+#       DELETE - wrong admin password or non-Basic authorization             #
+#                                                                            #
+#   403 (Forbidden) - unauthorized user request:                             #
+#       POST - the user is not an admin                                      #
+#       DELETE - the user is not an admin                                    #
+#                                                                            #
+#   404 (Not Found) - returned when the requested file is missing:           #
+#       GET - the requested file is not found                                #
+#                                                                            #
+#   409 (Conflict) - a conflict in the existing data with the new one:       #
+#       POST - the user to be added is already in the database               #
+#                                                                            #
+#   500 (Internal Server Error) - an error that happens due to failure of    #
+#   finishing the request                                                    #
+#                                                                            #
+#   501 (Not Implemented) - the request type is not supported in the server  #
+#                                                                            #
+##############################################################################
+
+
+def date_http():
+    now = datetime.now()
+    nowtuple = now.timetuple()
+    nowtimestamp = mktime(nowtuple)
+    date = format_date_time(nowtimestamp)
+    return date
+
 
 async def non_dp_handle(path):
     extension = path.suffix[1:]
@@ -51,9 +67,9 @@ async def non_dp_handle(path):
         content1 = await f.read()
     data = json.loads(content1)
     async with aiofiles.open(path, mode="rb") as i:
-        content2 = await i.read()
+        content = await i.read()
 
-    content2 = content2.decode('utf-8')
+    content = content.decode('utf-8')
     extension_map = {}
     for r in data['mime-mapping']:
         extension_map[r['extension']] = r['mime-type']
@@ -61,11 +77,14 @@ async def non_dp_handle(path):
         content_type = extension_map[extension]
     except KeyError:
         content_type = 'text/plain'
-        return web.Response(body=content2.encode('utf-8'), status=200,
-                            headers={"Content-Type": content_type, "charset": "utf-8"})
+        content_len = f"{len(content)}"
+        return web.Response(body=content.encode('utf-8'), status=200,
+                            headers={"Content-Type": content_type, "charset": "utf-8", "Date": date_http(), "Content"
+                                                                                                            "-Length": content_len})
     else:
-        return web.Response(body=content2.encode('utf-8'), status=200,
-                            headers={"Content-Type": content_type, "charset": "utf-8"})
+        content_len = f"{len(content)}"
+        return web.Response(body=content.encode('utf-8'), status=200,
+                            headers={"Content-Type": content_type, "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 # cmd is of form "{% python expression %}"
@@ -106,8 +125,9 @@ async def get_handler(request):
     # check if the requested path is the root path
     if is_root_path:
         content = 'Welcome Bro!'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=200,
-                            headers={"Content-Type": 'text/html', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/html', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # check file existence
     elif path.is_file():
         # ------------- dynamic pages handle -------------
@@ -120,15 +140,17 @@ async def get_handler(request):
             # check if the authorization is Basic
             if not is_basic_auth(request):
                 content = 'Unauthorized request'
+                content_len = f"{len(content)}"
                 return web.Response(body=content.encode('utf-8'), status=401,
-                                    headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                                    headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
             auth_user = decode_auth(request)
             # check if the user exists in the database
             if auth_user:
                 user = auth_user if user_in_db(auth_user) else user
             dp_content = await dp_handler(path, user, params)
+            content_len = f"{len(dp_content)}"
             return web.Response(body=dp_content.encode('utf-8'), status=200,
-                                headers={"Content-Type": 'text/html', "charset": "utf-8"})
+                                headers={"Content-Type": 'text/html', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
         # ------------- non dynamic pages handle -------------
         # three cases:
         # 1. ends with extension which exists in mime.json        ---> mime-type (from the mime.json)
@@ -136,16 +158,16 @@ async def get_handler(request):
         # 3. no extension at all                                  ---> plain/text
         else:
             content = await non_dp_handle(path)
-            return web.Response(body=content.encode('utf-8'), status=200,
-                                headers={"Content-Type": 'text/html', "charset": "utf-8"})
+            return content
         ###################
     else:
         if path.name == 'favicon.ico':
             pass
         else:
             content = '404 Page not found'
+            content_len = f"{len(content)}"
             return web.Response(body=content.encode('utf-8'), status=404,
-                                headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                                headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 def decode_auth(request):
@@ -214,6 +236,10 @@ def valid_users_path(path, request_type):
             return False
 
 
+def is_admin(user):
+    return user['username'] == admin['username']
+
+
 async def post_handler(request):
     print('POSTING...')
     path = Path(request.path)
@@ -223,29 +249,34 @@ async def post_handler(request):
     # ensure path is \users - otherwise return 404 (Bad Request)
     if not valid_users_path(path, POST_REQUEST):
         content = 'Bad request'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=400,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # ensure the authorization is Basic -  otherwise return unauthorized
-    if not is_basic_auth(request):
+    if not is_basic_auth(request) or (is_admin(user) and not authenticated(user)):
         content = 'Unauthorized request'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # ensure this is the admin - otherwise return forbidden
-    if not authenticated(user):
+    if not is_admin(user):
         content = 'Forbidden'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=403,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # ensure user doesn't exist in the database - otherwise return Conflict
     if user_in_db(new_user):
         content = 'Conflict error: user already exists'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=409,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     
     add_user_to_db(new_user)
     name = new_user['username']
     content = f'User {name} was added successfully to the database'
+    content_len = f"{len(content)}"
     return web.Response(body=content.encode('utf-8'), status=200,
-                        headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                        headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 # check if the authorization method is Basic
@@ -268,23 +299,27 @@ async def delete_handler(request):
     # ensure path is \users\<username> - otherwise return error
     if not valid_users_path(path, DELETE_REQUEST):
         content = 'Bad request'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=400,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # ensure the authorization is Basic -  otherwise return unauthorized
-    if not is_basic_auth(request):
+    if not is_basic_auth(request) or (is_admin(user) and not authenticated(user)):
         content = 'Unauthorized request'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # ensure this is the admin - otherwise return forbidden
-    if not authenticated(user):
+    if not is_admin(user):
         content = 'Forbidden'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=403,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     # delete user from database - doesn't matter if he already exists
     delete_user_from_db(user_to_delete)
     content = f'User {user_to_delete} was deleted successfully from the database'
+    content_len = f"{len(content)}"
     return web.Response(body=content.encode('utf-8'), status=200,
-                        headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                        headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 handlers = {'GET': get_handler, 'POST': post_handler, 'DELETE': delete_handler}
@@ -295,19 +330,21 @@ async def handler(request):
         return await handlers[request.method](request)
     except KeyError:
         content = request.method + ' is not implemented.'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=501,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
     except:
-        content = 'Some internal server error occurred while trying to read the file.'
+        content = 'Some internal server error has occurred.'
+        content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=500,
-                            headers={"Content-Type": 'text/html', "charset": "utf-8"})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 async def main():
     server = web.Server(handler)
     runner = web.ServerRunner(server)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', PORT)
+    site = web.TCPSite(runner, 'localhost', PORT,shutdown_timeout=TIMEOUT)
     await site.start()
 
     print("======= Serving on http://127.0.0.1:8001/ ======")
