@@ -142,7 +142,7 @@ async def get_handler(request):
                 content = 'Unauthorized request'
                 content_len = f"{len(content)}"
                 return web.Response(body=content.encode('utf-8'), status=401,
-                                    headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+                                    headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
             auth_user = decode_auth(request)
             # check if the user exists in the database
             if auth_user:
@@ -257,7 +257,7 @@ async def post_handler(request):
         content = 'Unauthorized request'
         content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
     # ensure this is the admin - otherwise return forbidden
     if not is_admin(user):
         content = 'Forbidden'
@@ -307,7 +307,7 @@ async def delete_handler(request):
         content = 'Unauthorized request'
         content_len = f"{len(content)}"
         return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
     # ensure this is the admin - otherwise return forbidden
     if not is_admin(user):
         content = 'Forbidden'
