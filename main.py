@@ -27,12 +27,11 @@ PORT = config.port
 #       DELETE - the path is not of form users/<username>                    #
 #                                                                            #
 #   401 (Unauthorized) - unauthorized access to some resource:               #
-#       POST - non-Basic authorization                                       #
-#       DELETE - non-Basic authorization                                     #
+#       POST - non admin user or non-Basic authorization                     #
+#       DELETE - non admin user or non-Basic authorization                   #
 #                                                                            #
 #   403 (Forbidden) - unauthorized user request:                             #
-#       POST - the user is not an admin with correct credentials             #
-#       DELETE - the user is not an admin with correct credentials           #
+#       GET - when trying to return users.db or config.py to client          #
 #                                                                            #
 #   404 (Not Found) - returned when the requested file is missing:           #
 #       GET - the requested file is not found                                #
@@ -60,20 +59,18 @@ def date_http():
 async def non_dp_handle(path):
     extension = path.suffix[1:]
     async with aiofiles.open('mime.json', mode='r') as f:
-        content1 = await f.read()
-    data = json.loads(content1)
+        mime_content = await f.read()
+        data = json.loads(mime_content)
     async with aiofiles.open(path, mode="rb") as i:
         content = await i.read()
-    content = content.decode('utf-8')
+    #content = content.decode('utf-8')
     extension_map = {}
     for r in data['mime-mapping']:
         extension_map[r['extension']] = r['mime-type']
-
     if extension in extension_map:
         content_type = extension_map[extension]
     else:
         content_type = 'text/plain'
-    content_len = f"{len(content)}"
     return content, content_type
 
 
@@ -87,7 +84,7 @@ def command_reform(cmd):
 
 
 # parses the dynamic page
-async def dp_parser(path, user, params):
+async def dp_render(path, user, params):
     async with aiofiles.open(path, mode="rb") as i:
         content = await i.read()
     content = content.decode('utf-8')
@@ -131,10 +128,18 @@ async def decode_user(request):
     return new_user
 
 
+def authenticated_user_in_db(user):
+    with sqlite3.connect('users.db') as db:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM Users WHERE username=? AND password=?", [user['username'], user['password']])
+        rows = cur.fetchall()
+    return True if rows else False
+
+
 def user_in_db(username):
     with sqlite3.connect('users.db') as db:
         cur = db.cursor()
-        cur.execute("SELECT * FROM Users WHERE username=?", (username,))
+        cur.execute("SELECT * FROM Users WHERE username=?", [username])
         rows = cur.fetchall()
     return True if rows else False
 
@@ -186,27 +191,32 @@ async def dp_handle(request):
     auth_user = decode_auth(request)
     # check if the user exists in the database
     if auth_user:
-        user = auth_user if user_in_db(auth_user) else user
-    content = await dp_parser(path, user, params)
-    return content, 'text/html'
+        user_dict = {'username': auth_user['username'], 'authenticated': True}
+        user = user_dict if authenticated_user_in_db(auth_user) else user
+    content = await dp_render(path, user, params)
+    return content
 
 
 async def get_handler(request):
     print('GETTING...')
     path = Path(request.path[1:])
     extension = path.suffix
-    content_type = 'text/plain'
+    content_type = 'text/html'
     status = 200
-    # path.parts splits the path and return its parts (in this case without the root (aka /))
+    # path.parts splits the path and return its parts (in this case without the root (aka without /))
     is_root_path = True if not path.parts else False
     # check if the requested path is the root path
-    if is_root_path or path.name == 'favicon.ico':
+    if is_root_path or str(path) == 'favicon.ico':
         content = 'Welcome Bro!'
+    # illegal to return to the client
+    elif str(path) == 'users.db' or str(path) == 'config.py':
+        content = '''<h1>Are you kidding bro? it's forbidden to request this file.</h1>'''
+        status = 403
     # check file existence
     elif path.is_file():
         # ------------- dynamic pages handle -------------
         if extension == '.dp':
-            content, content_type = await dp_handle(request)
+            content = await dp_handle(request)
         # ------------- non dynamic pages handle -------------
         # three cases:
         # 1. ends with extension which exists in mime.json        ---> mime-type (from the mime.json)
@@ -215,9 +225,8 @@ async def get_handler(request):
         else:
             content, content_type = await non_dp_handle(path)
     else:
-        content = '404 Page not found.'
         status = 404
-
+        content = f'<h1>{status} Error, could not find the file "{path}".</h1>'
     return content, content_type, status
 
 
@@ -227,27 +236,23 @@ async def post_handler(request):
     status = 200
     # ensure path is \users and the body is of the right format- otherwise return 400 (Bad Request)
     if not await valid_request(request):
-        content = 'Bad request.'
         status = 400
+        content = f'<h1>Error {status}, Bad request.</h1>'
     # ensure the authorization is Basic -  otherwise return unauthorized
-    elif not is_basic_auth(request):
-        content = 'Unauthorized request.'
+    elif not is_basic_auth(request) or not authenticated(user):
         status = 401
-    # ensure this is the admin - otherwise return forbidden
-    elif not authenticated(user):
-        content = 'Forbidden.'
-        status = 403
+        content = f'<h1>Error {status}, Unauthorized request.</h1>'
     # ensure user doesn't exist in the database - otherwise return Conflict
     else:
         new_user = await decode_user(request)
         name = new_user['username']
         if user_in_db(name):
-            content = f'Conflict error: user {name} already exists.'
             status = 409
+            content = f'<h1>Error {status} (Conflict): user {name} already exists.</h1>'
         else:
             add_user_to_db(new_user)
-            content = f'User {name} was added successfully to the database.'
-    return content, 'text/plain', status
+            content = f'<h1>User {name} was added successfully to the database.</h1>'
+    return content, 'text/html', status
 
 
 async def delete_handler(request):
@@ -258,43 +263,37 @@ async def delete_handler(request):
     status = 200
     # ensure path is \users\<username> and format- otherwise return 400 (Bad Request)
     if not await valid_request(request):
-        content = 'Bad request.'
         status = 400
+        content = f'<h1>Error {status}, Bad request.</h1>'
     # ensure the authorization is Basic -  otherwise return unauthorized
-    elif not is_basic_auth(request):
-        content = 'Unauthorized request.'
+    elif not is_basic_auth(request) or not authenticated(user):
         status = 401
-    # ensure this is the admin - otherwise return forbidden
-    elif not authenticated(user):
-        content = 'Forbidden.'
-        status = 403
+        content = f'<h1>Error {status}, Unauthorized request.</h1>'
     # delete user from database - doesn't matter if he already exists
     else:
         delete_user_from_db(user_to_delete)
-        content = f'User {user_to_delete} was deleted successfully from the database.'
-
-    return content, 'text/plain', status
+        content = f'<h1>User {user_to_delete} was deleted successfully from the database.</h1>'
+    return content, 'text/html', status
 
 
 handlers = {'GET': get_handler, 'POST': post_handler, 'DELETE': delete_handler}
 
 
 async def handler(request):
+    content_type = 'text/html'
     try:
         if request.method in handlers:
             content, content_type, status = await handlers[request.method](request)
         else:
-            content = request.method + ' is not implemented.'
-            content_type = 'text/plain'
             status = 501
+            content = f'''<h1>Error {status}, {request.method} is not implemented.</h1>'''
     except:
-        content = 'Some internal server error has occurred.'
-        content_type = 'text/plain'
         status = 500
+        content = f'<h1>Error {status}, Some internal server error has occurred.</h1>'
     content_len = f"{len(content)}"
-    return web.Response(body=content.encode('utf-8'), status=status,
-                        headers={"Connection": 'close', "Content-Type": content_type, "charset": "utf-8", "Date": date_http(),
-                                 "Content-Length": content_len})
+    return web.Response(body=content, status=status,
+                        headers={"Connection": 'close', "Content-Type": content_type, "charset": "utf-8",
+                                 "Date": date_http(), "Content-Length": content_len})
 
 
 async def main():
@@ -303,8 +302,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, 'localhost', PORT)
     await site.start()
-
-    print("======= Serving on http://127.0.0.1:8001/ ======")
+    print(f"======= Serving on http://127.0.0.1:{PORT}/ ======")
 
 
 if __name__ == "__main__":
