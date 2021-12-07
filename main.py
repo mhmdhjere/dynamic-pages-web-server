@@ -18,6 +18,8 @@ TIMEOUT = config.timeout
 POST_REQUEST = 1
 DELETE_REQUEST = 0
 
+#TODO connection close add to headers
+
 
 ############################### ERROR HANDLING ###############################
 #                                                                            #
@@ -68,7 +70,6 @@ async def non_dp_handle(path):
     data = json.loads(content1)
     async with aiofiles.open(path, mode="rb") as i:
         content = await i.read()
-
     content = content.decode('utf-8')
     extension_map = {}
     for r in data['mime-mapping']:
@@ -93,12 +94,6 @@ def command_reform(cmd):
     new_cmd = cmd[2:-2]
     # remove whitespaces from the beginning and the end
     new_cmd = new_cmd.strip()
-    ###################
-    # handle newlines
-    # new_cmd = new_cmd.replace('\r\n', '\\\r\n')
-    # ensure that no additional slashes were added
-    # new_cmd = new_cmd.replace('\\\\\r\n', '\\\r\n')
-    ###################
     return new_cmd
 
 
@@ -137,12 +132,6 @@ async def get_handler(request):
             # params is the dictionary needed in the context
             user = {'username': None, 'authenticated': False}
             params = request.query
-            # check if the authorization is Basic
-            if not is_basic_auth(request):
-                content = 'Unauthorized request'
-                content_len = f"{len(content)}"
-                return web.Response(body=content.encode('utf-8'), status=401,
-                                    headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
             auth_user = decode_auth(request)
             # check if the user exists in the database
             if auth_user:
@@ -191,104 +180,91 @@ def authenticated(user):
 
 
 async def decode_user(request):
-    encoded_body = await request.content.read()
-    tmp = urllib.parse.parse_qs(encoded_body.decode('utf-8'))
-    username = list(tmp.keys())[0]
-    password = tmp[username][0]
+    encoded_body = await request.read()
+    cred_dict = urllib.parse.parse_qs(encoded_body.decode('utf-8'))
+    username = cred_dict['username'][0]
+    password = cred_dict['password'][0]
     new_user = {'username': username, 'password': password}
     return new_user
 
 
 def user_in_db(user):
-    db = sqlite3.connect('users.db')
-    cur = db.cursor()
-    cur.execute("SELECT * FROM Users WHERE username=? AND password=?", (user['username'], user['password']))
-    rows = cur.fetchall()
-    db.close()
+    with sqlite3.connect('users.db') as db:
+        cur = db.cursor()
+        cur.execute("SELECT * FROM Users WHERE username=? AND password=?", (user['username'], user['password']))
+        rows = cur.fetchall()
     return True if rows else False
 
 
 def add_user_to_db(new_user):
-    db = sqlite3.connect('users.db')
-    db.execute('INSERT into USERS VALUES (?,?)', [new_user['username'], new_user['password']])
-    db.commit()
-    db.close()
+    with sqlite3.connect('users.db') as db:
+        db.execute('INSERT into USERS VALUES (?,?)', [new_user['username'], new_user['password']])
+        db.commit()
 
 
 def delete_user_from_db(username):
-    db = sqlite3.connect('users.db')
-    db.execute('DELETE FROM USERS WHERE username=?', [username])
-    db.commit()
-    db.close()
+    with sqlite3.connect('users.db') as db:
+        db.execute('DELETE FROM Users WHERE username=?', [username])
+        db.commit()
 
 
 # request_type:
 # 1/POST_REQUEST if the request is POST
 # 0/DELETE_REQUEST if the request is DELETE
-def valid_users_path(path, request_type):
+async def valid_request(request):
+    path = Path(request.path)
     path_dirs = path.parts
-    match request_type:
-        case 1:
-            return path_dirs[1] == 'users' and len(path_dirs) == 2
-        case 0:
-            return path_dirs[1] == 'users' and len(path_dirs) == 3
-        case _:
-            return False
+    request_type = request.method
+    valid_path = True
+    try:
+        if request_type == 'POST':
 
-
-def is_admin(user):
-    return user['username'] == admin['username']
+            valid_path = path_dirs[1] == 'users' and len(path_dirs) == 2
+            user = await decode_user(request)
+        elif request_type == 'DELETE':
+            valid_path = path_dirs[1] == 'users' and len(path_dirs) == 3
+    except (IndexError, KeyError):
+        return False
+    else:
+        return valid_path
 
 
 async def post_handler(request):
     print('POSTING...')
-    path = Path(request.path)
     user = decode_auth(request)
-    new_user = await decode_user(request)
-
-    # ensure path is \users - otherwise return 404 (Bad Request)
-    if not valid_users_path(path, POST_REQUEST):
+    status = 200
+    # ensure path is \users and the body is of the right format- otherwise return 400 (Bad Request)
+    if not await valid_request(request):
         content = 'Bad request'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=400,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+        status = 400
     # ensure the authorization is Basic -  otherwise return unauthorized
-    if not is_basic_auth(request) or (is_admin(user) and not authenticated(user)):
+    elif not is_basic_auth(request):
         content = 'Unauthorized request'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
+        status = 401
     # ensure this is the admin - otherwise return forbidden
-    if not is_admin(user):
+    elif not authenticated(user):
         content = 'Forbidden'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=403,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+        status = 403
     # ensure user doesn't exist in the database - otherwise return Conflict
-    if user_in_db(new_user):
-        content = 'Conflict error: user already exists'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=409,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
-    
-    add_user_to_db(new_user)
-    name = new_user['username']
-    content = f'User {name} was added successfully to the database'
+    else:
+        new_user = await decode_user(request)
+        name = new_user['username']
+        if user_in_db(new_user):
+            content = f'Conflict error: user {name} already exists'
+            status = 409
+        else:
+            add_user_to_db(new_user)
+            content = f'User {name} was added successfully to the database'
     content_len = f"{len(content)}"
-    return web.Response(body=content.encode('utf-8'), status=200,
+    return web.Response(body=content.encode('utf-8'), status=status,
                         headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
 # check if the authorization method is Basic
 def is_basic_auth(request):
-    try:
-        auth = request.headers['Authorization']
-    except KeyError:
+    if 'Authorization' not in request.headers:
         return False
-    else:
-        cred_encoded_list = auth.split(' ')
-        encoding_type = cred_encoded_list[0]
-        return False if encoding_type != 'Basic' else True
+    return 'Basic' in request.headers['Authorization']
 
 
 async def delete_handler(request):
@@ -296,29 +272,25 @@ async def delete_handler(request):
     path = Path(request.path)
     user = decode_auth(request)
     user_to_delete = path.name
-    # ensure path is \users\<username> - otherwise return error
-    if not valid_users_path(path, DELETE_REQUEST):
+    status = 200
+    # ensure path is \users and the body is of the right format- otherwise return 400 (Bad Request)
+    if not await valid_request(request):
         content = 'Bad request'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=400,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+        status = 400
     # ensure the authorization is Basic -  otherwise return unauthorized
-    if not is_basic_auth(request) or (is_admin(user) and not authenticated(user)):
+    elif not is_basic_auth(request):
         content = 'Unauthorized request'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=401,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len, 'WWW-Authenticate': 'Basic'})
+        status = 401
     # ensure this is the admin - otherwise return forbidden
-    if not is_admin(user):
+    elif not authenticated(user):
         content = 'Forbidden'
-        content_len = f"{len(content)}"
-        return web.Response(body=content.encode('utf-8'), status=403,
-                            headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
+        status = 403
     # delete user from database - doesn't matter if he already exists
-    delete_user_from_db(user_to_delete)
-    content = f'User {user_to_delete} was deleted successfully from the database'
+    else:
+        delete_user_from_db(user_to_delete)
+        content = f'User {user_to_delete} was deleted successfully from the database'
     content_len = f"{len(content)}"
-    return web.Response(body=content.encode('utf-8'), status=200,
+    return web.Response(body=content.encode('utf-8'), status=status,
                         headers={"Content-Type": 'text/plain', "charset": "utf-8", "Date": date_http(), "Content-Length": content_len})
 
 
@@ -344,7 +316,7 @@ async def main():
     server = web.Server(handler)
     runner = web.ServerRunner(server)
     await runner.setup()
-    site = web.TCPSite(runner, 'localhost', PORT,shutdown_timeout=TIMEOUT)
+    site = web.TCPSite(runner, 'localhost', PORT)
     await site.start()
 
     print("======= Serving on http://127.0.0.1:8001/ ======")
